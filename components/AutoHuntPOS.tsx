@@ -4,13 +4,13 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   Wrench, Truck, Car, Store, Plus, X, ChevronLeft, ArrowDownCircle, ArrowUpCircle,
   CreditCard, Sparkles, Award, FileBarChart, Trash2, Camera, Loader2, Users, TrendingUp,
-  LayoutGrid, CheckCircle2,
+  LayoutGrid, CheckCircle2, Receipt,
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { supabase } from "@/lib/supabaseClient";
 import {
   DIVISIONS, TX_TYPES, POINTS_THRESHOLD, pointsForAmount, currency,
-  DivisionKey, TxType, Transaction,
+  DivisionKey, TxType, Transaction, Expense, EXPENSE_CATEGORIES,
 } from "@/lib/types";
 
 const DIVISION_ICONS: Record<DivisionKey, any> = { auto_body: Car, towing: Truck, mechanic: Wrench, auto_hub: Store };
@@ -89,11 +89,63 @@ function AddTxModal({
 }) {
   const [type, setType] = useState<TxType>(prefill?.type || "cash_in");
   const [amount, setAmount] = useState(prefill?.amount ?? "");
-  const [customer, setCustomer] = useState(prefill?.customer || "");
   const [description, setDescription] = useState(prefill?.description || "");
-  const amt = Number(amount) || 0;
   const isSale = TX_TYPES[type].isSale;
-  const willEarnPoints = isSale && amt >= POINTS_THRESHOLD && customer.trim();
+
+  // Customer step state
+  const [customerName, setCustomerName] = useState(prefill?.customer || "");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [customerLocked, setCustomerLocked] = useState(false);
+  const [query, setQuery] = useState("");
+  const [matches, setMatches] = useState<{ id: string; name: string; phone: string }[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [showNewCustomer, setShowNewCustomer] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [savingCustomer, setSavingCustomer] = useState(false);
+  const [customerError, setCustomerError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSale || customerLocked) return;
+    if (!query.trim()) { setMatches([]); return; }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      const { data, error } = await supabase.from("customers").select("*").ilike("name", `%${query.trim()}%`).limit(6);
+      setMatches(error ? [] : (data as any) || []);
+      setSearching(false);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query, isSale, customerLocked]);
+
+  function selectExisting(c: { name: string; phone: string }) {
+    setCustomerName(c.name);
+    setCustomerPhone(c.phone || "");
+    setCustomerLocked(true);
+    setQuery("");
+    setMatches([]);
+  }
+
+  async function createCustomer() {
+    if (!newName.trim()) return;
+    setSavingCustomer(true);
+    setCustomerError(null);
+    const { data, error } = await supabase
+      .from("customers")
+      .insert([{ name: newName.trim(), phone: newPhone.trim() }])
+      .select()
+      .single();
+    setSavingCustomer(false);
+    if (error) { setCustomerError("Couldn't save that customer: " + error.message); return; }
+    setCustomerName((data as any).name);
+    setCustomerPhone((data as any).phone || "");
+    setCustomerLocked(true);
+    setShowNewCustomer(false);
+  }
+
+  const amt = Number(amount) || 0;
+  const needsCustomerStep = isSale && !customerLocked;
+  const readyForDetails = !isSale || customerLocked;
+  const willEarnPoints = isSale && amt >= POINTS_THRESHOLD && customerName.trim();
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#0A1930]/50 backdrop-blur-sm">
@@ -110,7 +162,7 @@ function AddTxModal({
               {(Object.entries(TX_TYPES) as [TxType, typeof TX_TYPES[TxType]][]).map(([key, def]) => (
                 <button
                   key={key}
-                  onClick={() => setType(key)}
+                  onClick={() => { setType(key); setCustomerLocked(false); }}
                   className="flex-1 rounded-lg py-2.5 text-xs font-semibold border transition-colors"
                   style={type === key ? { backgroundColor: def.color, borderColor: def.color, color: "white" } : { borderColor: "#DCE3E1", color: "#5B6B70" }}
                 >
@@ -119,25 +171,92 @@ function AddTxModal({
               ))}
             </div>
           </Field>
-          <Field label="Amount (USD)">
-            <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" placeholder="0" className={`${inputCls} font-mono`} />
-          </Field>
-          <Field label={`Customer ${isSale ? "(required for reward points)" : "(optional)"}`}>
-            <input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="Full name" className={inputCls} />
-          </Field>
-          <Field label="Description">
-            <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What's this for?" className={inputCls} />
-          </Field>
-          {willEarnPoints && (
-            <div className="flex items-center gap-2 bg-[#FDF3E2] text-[#8A5D0E] rounded-lg px-3 py-2 text-xs font-semibold">
-              <Award size={14} /> This sale qualifies for {pointsForAmount(amt)} reward points.
+
+          {needsCustomerStep && (
+            <div className="rounded-xl border border-[#DCE3E1] p-4 space-y-3 bg-[#F5F7F6]">
+              <p className="text-xs font-semibold text-[#5B6B70] uppercase tracking-wide">Step 1 · Find or add customer</p>
+              {!showNewCustomer ? (
+                <>
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="Search customer name…"
+                    className={inputCls}
+                  />
+                  {searching && <p className="text-xs text-[#8A9A9E]">Searching…</p>}
+                  {matches.length > 0 && (
+                    <div className="space-y-1.5">
+                      {matches.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => selectExisting(c)}
+                          className="w-full text-left bg-white border border-[#E4E8E6] rounded-lg px-3 py-2 text-sm hover:border-[#1F9D6C]/50"
+                        >
+                          <span className="font-medium text-[#16232E]">{c.name}</span>
+                          {c.phone && <span className="text-[#8A9A9E]"> · {c.phone}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => { setShowNewCustomer(true); setNewName(query); }}
+                    className="text-xs font-semibold text-[#1F9D6C] hover:underline"
+                  >
+                    + Add new customer
+                  </button>
+                </>
+              ) : (
+                <>
+                  <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Customer full name" className={inputCls} />
+                  <input value={newPhone} onChange={(e) => setNewPhone(e.target.value)} placeholder="Phone (optional)" className={inputCls} />
+                  {customerError && <p className="text-xs text-[#D14343]">{customerError}</p>}
+                  <div className="flex gap-2">
+                    <button
+                      onClick={createCustomer}
+                      disabled={!newName.trim() || savingCustomer}
+                      className="flex-1 rounded-lg py-2 text-xs font-semibold text-white bg-[#0A1930] disabled:opacity-40"
+                    >
+                      {savingCustomer ? "Saving…" : "Save customer & continue"}
+                    </button>
+                    <button onClick={() => setShowNewCustomer(false)} className="rounded-lg py-2 px-3 text-xs font-semibold border border-[#DCE3E1] text-[#5B6B70]">
+                      Back
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
+          )}
+
+          {isSale && customerLocked && (
+            <div className="flex items-center justify-between rounded-lg bg-[#EAF6F0] border border-[#1F9D6C]/30 px-3 py-2">
+              <div>
+                <p className="text-sm font-semibold text-[#16232E]">{customerName}</p>
+                {customerPhone && <p className="text-xs text-[#5B6B70]">{customerPhone}</p>}
+              </div>
+              <button onClick={() => setCustomerLocked(false)} className="text-xs font-semibold text-[#1F9D6C] hover:underline">Change</button>
+            </div>
+          )}
+
+          {readyForDetails && (
+            <>
+              <Field label="Amount (USD)">
+                <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" placeholder="0" className={`${inputCls} font-mono`} />
+              </Field>
+              <Field label="Description">
+                <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What's this for?" className={inputCls} />
+              </Field>
+              {willEarnPoints && (
+                <div className="flex items-center gap-2 bg-[#FDF3E2] text-[#8A5D0E] rounded-lg px-3 py-2 text-xs font-semibold">
+                  <Award size={14} /> This sale qualifies for {pointsForAmount(amt)} reward points.
+                </div>
+              )}
+            </>
           )}
         </div>
         <div className="p-5 pt-0">
           <button
-            disabled={amt <= 0 || saving}
-            onClick={() => onSave({ division, type, amount: amt, customer: customer.trim(), description: description.trim() })}
+            disabled={amt <= 0 || saving || !readyForDetails}
+            onClick={() => onSave({ division, type, amount: amt, customer: customerName.trim(), description: description.trim() })}
             className="w-full rounded-lg py-3 font-semibold text-white bg-[#0A1930] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#122A52] transition-colors flex items-center justify-center gap-2"
           >
             {saving ? <><Loader2 size={16} className="animate-spin" /> Saving…</> : "Save record"}
@@ -462,6 +581,130 @@ function RewardsView({ txs, onBack }: { txs: Transaction[]; onBack: () => void }
   );
 }
 
+/* ---------------- Expenses (owner-only) ---------------- */
+function AddExpenseModal({ saving, onClose, onSave }: { saving: boolean; onClose: () => void; onSave: (v: any) => void }) {
+  const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
+  const [amount, setAmount] = useState("");
+  const [description, setDescription] = useState("");
+  const amt = Number(amount) || 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#0A1930]/50 backdrop-blur-sm">
+      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl max-h-[92vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white flex items-center justify-between px-5 py-4 border-b border-[#EDF1F0]">
+          <h2 className="font-bold text-[#16232E] text-lg">New Expense</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F5F7F6]">
+            <X size={18} className="text-[#5B6B70]" />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          <Field label="Category">
+            <div className="flex flex-wrap gap-2">
+              {EXPENSE_CATEGORIES.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setCategory(c)}
+                  className="rounded-full px-3 py-1.5 text-xs font-semibold border transition-colors"
+                  style={category === c ? { background: "#0A1930", borderColor: "#0A1930", color: "white" } : { borderColor: "#DCE3E1", color: "#5B6B70" }}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label="Amount (USD)">
+            <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" placeholder="0" className={`${inputCls} font-mono`} />
+          </Field>
+          <Field label="Description">
+            <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="e.g. July rent" className={inputCls} />
+          </Field>
+        </div>
+        <div className="p-5 pt-0">
+          <button
+            disabled={amt <= 0 || saving}
+            onClick={() => onSave({ category, amount: amt, description: description.trim() })}
+            className="w-full rounded-lg py-3 font-semibold text-white bg-[#0A1930] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#122A52] transition-colors flex items-center justify-center gap-2"
+          >
+            {saving ? <><Loader2 size={16} className="animate-spin" /> Saving…</> : "Save expense"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExpensesView({
+  expenses, onBack, onAdd, onDelete,
+}: {
+  expenses: Expense[]; onBack: () => void; onAdd: () => void; onDelete: (id: string) => void;
+}) {
+  const total = expenses.reduce((a, e) => a + e.amount, 0);
+  const byCategory = useMemo(() => {
+    const map: Record<string, number> = {};
+    expenses.forEach((e) => { map[e.category] = (map[e.category] || 0) + e.amount; });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [expenses]);
+
+  return (
+    <div className="pb-24">
+      <div className="flex items-center gap-2 px-4 pt-4">
+        <button onClick={onBack} className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-[#F5F7F6]">
+          <ChevronLeft size={20} className="text-[#5B6B70]" />
+        </button>
+        <h1 className="font-bold text-[#16232E] flex items-center gap-2"><Receipt size={17} className="text-[#D14343]" /> Expenses</h1>
+      </div>
+      <p className="px-4 mt-2 text-xs text-[#8A9A9E]">Shop-wide costs like rent, utilities, and payroll — separate from division Cash Out.</p>
+
+      <div className="px-4 mt-4">
+        <Kpi label="Total Expenses" value={currency(total)} tint="#D14343" />
+      </div>
+
+      {byCategory.length > 0 && (
+        <div className="px-4 mt-4 grid grid-cols-2 gap-2">
+          {byCategory.map(([cat, amt]) => (
+            <div key={cat} className="bg-white rounded-lg border border-[#E4E8E6] px-3 py-2">
+              <p className="text-[10px] text-[#8A9A9E] uppercase">{cat}</p>
+              <p className="font-mono text-sm font-semibold text-[#16232E]">{currency(amt)}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="px-4 mt-5 flex items-center justify-between">
+        <h2 className="font-bold text-sm text-[#16232E]">Records</h2>
+        <span className="text-xs text-[#8A9A9E]">{expenses.length} entries</span>
+      </div>
+      <div className="px-4 mt-2 space-y-2">
+        {expenses.length === 0 && <p className="text-sm text-[#8A9A9E] text-center py-8">No expenses logged yet.</p>}
+        {[...expenses].reverse().map((e) => (
+          <div key={e.id} className="flex items-center gap-3 bg-white rounded-xl border border-[#E4E8E6] p-3">
+            <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 bg-[#D143431A]">
+              <Receipt size={16} className="text-[#D14343]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-[#16232E] truncate">{e.description || e.category}</p>
+                <p className="font-mono text-sm font-bold text-[#D14343] shrink-0">−{currency(e.amount)}</p>
+              </div>
+              <p className="text-xs text-[#8A9A9E]">{e.category} · {fmtDate(e.created_at)}</p>
+            </div>
+            <button onClick={() => onDelete(e.id)} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-[#FBEAEA] shrink-0">
+              <Trash2 size={14} className="text-[#C98080]" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <button
+        onClick={onAdd}
+        className="fixed bottom-6 right-6 w-14 h-14 rounded-full text-white shadow-lg flex items-center justify-center hover:opacity-90 transition-opacity bg-[#D14343]"
+      >
+        <Plus size={24} />
+      </button>
+    </div>
+  );
+}
+
 /* ---------------- Root component ---------------- */
 export default function AutoHuntPOS() {
   const [txs, setTxs] = useState<Transaction[]>([]);
@@ -470,18 +713,47 @@ export default function AutoHuntPOS() {
   const [saving, setSaving] = useState(false);
 
   const [currentUser, setCurrentUser] = useState<{ name: string | null; role: string | null }>({ name: null, role: null });
-  const [view, setView] = useState<"home" | "division" | "reports" | "rewards">("home");
+  const [view, setView] = useState<"home" | "division" | "reports" | "rewards" | "expenses">("home");
   const [activeDivision, setActiveDivision] = useState<DivisionKey | null>(null);
   const isOwner = currentUser.role === "owner";
   const [showAddModal, setShowAddModal] = useState(false);
   const [addPrefill, setAddPrefill] = useState<any>(null);
   const [showAi, setShowAi] = useState(false);
   const [reportDate, setReportDate] = useState(todayISO());
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [showAddExpense, setShowAddExpense] = useState(false);
+  const [savingExpense, setSavingExpense] = useState(false);
 
   useEffect(() => {
     loadTransactions();
+    loadExpenses();
     fetch("/api/me").then((r) => r.json()).then(setCurrentUser).catch(() => {});
   }, []);
+
+  async function loadExpenses() {
+    const { data, error } = await supabase.from("expenses").select("*").order("created_at", { ascending: true });
+    if (!error) setExpenses((data || []) as Expense[]);
+  }
+
+  async function saveExpense({ category, amount, description }: any) {
+    setSavingExpense(true);
+    const { data, error } = await supabase
+      .from("expenses")
+      .insert([{ category, amount, description }])
+      .select()
+      .single();
+    setSavingExpense(false);
+    if (error) { alert("Couldn't save that expense: " + error.message); return; }
+    setExpenses((prev) => [...prev, data as Expense]);
+    setShowAddExpense(false);
+  }
+
+  async function deleteExpense(id: string) {
+    const prev = expenses;
+    setExpenses((p) => p.filter((e) => e.id !== id));
+    const { error } = await supabase.from("expenses").delete().eq("id", id);
+    if (error) { alert("Couldn't delete: " + error.message); setExpenses(prev); }
+  }
 
   async function loadTransactions() {
     setLoading(true);
@@ -636,7 +908,11 @@ export default function AutoHuntPOS() {
                         <FileBarChart size={18} className="text-[#0A1930]" />
                         <span className="text-sm font-semibold text-left text-[#16232E]">Daily Report</span>
                       </button>
-                      <button onClick={() => setView("rewards")} className="bg-white border border-[#E4E8E6] rounded-xl p-4 flex flex-col items-start gap-2 hover:border-[#1F9D6C]/40 transition-colors col-span-2">
+                      <button onClick={() => setView("expenses")} className="bg-white border border-[#E4E8E6] rounded-xl p-4 flex flex-col items-start gap-2 hover:border-[#1F9D6C]/40 transition-colors">
+                        <Receipt size={18} className="text-[#D14343]" />
+                        <span className="text-sm font-semibold text-left text-[#16232E]">Expenses</span>
+                      </button>
+                      <button onClick={() => setView("rewards")} className="bg-white border border-[#E4E8E6] rounded-xl p-4 flex flex-col items-start gap-2 hover:border-[#1F9D6C]/40 transition-colors">
                         <div className="flex items-center gap-2">
                           <Users size={18} className="text-[#E8A33D]" />
                           <span className="text-sm font-semibold text-[#16232E]">Reward Members</span>
@@ -670,9 +946,19 @@ export default function AutoHuntPOS() {
             ) : (
               <div className="px-4 pt-10 text-center text-sm text-[#8A9A9E]">This screen is only available to the owner account.</div>
             ))}
+
+            {view === "expenses" && (isOwner ? (
+              <ExpensesView expenses={expenses} onBack={() => setView("home")} onAdd={() => setShowAddExpense(true)} onDelete={deleteExpense} />
+            ) : (
+              <div className="px-4 pt-10 text-center text-sm text-[#8A9A9E]">This screen is only available to the owner account.</div>
+            ))}
           </>
         )}
       </div>
+
+      {showAddExpense && (
+        <AddExpenseModal saving={savingExpense} onClose={() => setShowAddExpense(false)} onSave={saveExpense} />
+      )}
 
       {showAddModal && (
         <AddTxModal

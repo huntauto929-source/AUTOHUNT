@@ -28,6 +28,16 @@ export const TX_TYPES: Record<TxType, { label: string; isSale: boolean; sign: 1 
 export const POINTS_THRESHOLD = 500;
 export const pointsForAmount = (amt: number) => Math.floor(amt / 100) * 5;
 
+export interface Expense {
+  id: string;
+  category: string;
+  amount: number;
+  description: string;
+  created_at: string;
+}
+
+export const EXPENSE_CATEGORIES = ["Rent", "Utilities", "Payroll", "Supplies", "Insurance", "Other"];
+
 export function currency(n: number) {
   return (Number(n) || 0).toLocaleString("en-US", {
     style: "currency",
