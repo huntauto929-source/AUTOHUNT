@@ -35,7 +35,7 @@ function Kpi({ label, value, tint, icon: Icon }: { label: string; value: string 
   );
 }
 
-function TxRow({ tx, onDelete }: { tx: Transaction; onDelete: (id: string) => void }) {
+function TxRow({ tx, onDelete, canDelete }: { tx: Transaction; onDelete: (id: string) => void; canDelete: boolean }) {
   const def = TX_TYPES[tx.type];
   const Icon = TX_ICONS[tx.type];
   return (
@@ -61,9 +61,11 @@ function TxRow({ tx, onDelete }: { tx: Transaction; onDelete: (id: string) => vo
           )}
         </div>
       </div>
-      <button onClick={() => onDelete(tx.id)} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-[#FBEAEA] shrink-0">
-        <Trash2 size={14} className="text-[#C98080]" />
-      </button>
+      {canDelete && (
+        <button onClick={() => onDelete(tx.id)} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-[#FBEAEA] shrink-0">
+          <Trash2 size={14} className="text-[#C98080]" />
+        </button>
+      )}
     </div>
   );
 }
@@ -282,9 +284,9 @@ function AiEstimateModal({ onClose, onUseEstimate }: { onClose: () => void; onUs
 
 /* ---------------- Division view ---------------- */
 function DivisionView({
-  division, txs, onBack, onAdd, onDelete,
+  division, txs, onBack, onAdd, onDelete, isOwner,
 }: {
-  division: DivisionKey; txs: Transaction[]; onBack: () => void; onAdd: () => void; onDelete: (id: string) => void;
+  division: DivisionKey; txs: Transaction[]; onBack: () => void; onAdd: () => void; onDelete: (id: string) => void; isOwner: boolean;
 }) {
   const Icon = DIVISION_ICONS[division];
   const def = DIVISIONS[division];
@@ -320,7 +322,7 @@ function DivisionView({
       </div>
       <div className="px-4 mt-2 space-y-2">
         {txs.length === 0 && <p className="text-sm text-[#8A9A9E] text-center py-8">No records yet. Add the first one.</p>}
-        {[...txs].reverse().map((tx) => <TxRow key={tx.id} tx={tx} onDelete={onDelete} />)}
+        {[...txs].reverse().map((tx) => <TxRow key={tx.id} tx={tx} onDelete={onDelete} canDelete={isOwner} />)}
       </div>
 
       <button
@@ -467,8 +469,10 @@ export default function AutoHuntPOS() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const [currentUser, setCurrentUser] = useState<{ name: string | null; role: string | null }>({ name: null, role: null });
   const [view, setView] = useState<"home" | "division" | "reports" | "rewards">("home");
   const [activeDivision, setActiveDivision] = useState<DivisionKey | null>(null);
+  const isOwner = currentUser.role === "owner";
   const [showAddModal, setShowAddModal] = useState(false);
   const [addPrefill, setAddPrefill] = useState<any>(null);
   const [showAi, setShowAi] = useState(false);
@@ -476,6 +480,7 @@ export default function AutoHuntPOS() {
 
   useEffect(() => {
     loadTransactions();
+    fetch("/api/me").then((r) => r.json()).then(setCurrentUser).catch(() => {});
   }, []);
 
   async function loadTransactions() {
@@ -553,9 +558,22 @@ export default function AutoHuntPOS() {
             </div>
             <span className="font-bold tracking-tight">Auto Hunt <span className="text-[#1F9D6C]">POS</span></span>
           </div>
-          {view !== "home" && (
-            <button onClick={() => setView("home")} className="text-xs font-semibold text-white/70 hover:text-white">Home</button>
-          )}
+          <div className="flex items-center gap-4">
+            {currentUser.name && (
+              <span className="text-xs text-white/60 hidden sm:inline">
+                {currentUser.name}{isOwner ? " · Owner" : ""}
+              </span>
+            )}
+            {view !== "home" && (
+              <button onClick={() => setView("home")} className="text-xs font-semibold text-white/70 hover:text-white">Home</button>
+            )}
+            <button
+              onClick={async () => { await fetch("/api/logout", { method: "POST" }); window.location.href = "/login"; }}
+              className="text-xs font-semibold text-white/70 hover:text-white"
+            >
+              Log out
+            </button>
+          </div>
         </div>
       </div>
 
@@ -608,20 +626,24 @@ export default function AutoHuntPOS() {
 
                 <h2 className="font-bold text-[#16232E] mt-6 mb-2">Tools</h2>
                 <div className="grid grid-cols-2 gap-3">
-                  <button onClick={() => setShowAi(true)} className="bg-[#1F9D6C] text-white rounded-xl p-4 flex flex-col items-start gap-2 hover:bg-[#188056] transition-colors">
+                  <button onClick={() => setShowAi(true)} className={`bg-[#1F9D6C] text-white rounded-xl p-4 flex flex-col items-start gap-2 hover:bg-[#188056] transition-colors ${isOwner ? "" : "col-span-2"}`}>
                     <Sparkles size={18} />
                     <span className="text-sm font-semibold text-left">AI Photo Estimate</span>
                   </button>
-                  <button onClick={() => setView("reports")} className="bg-white border border-[#E4E8E6] rounded-xl p-4 flex flex-col items-start gap-2 hover:border-[#1F9D6C]/40 transition-colors">
-                    <FileBarChart size={18} className="text-[#0A1930]" />
-                    <span className="text-sm font-semibold text-left text-[#16232E]">Daily Report</span>
-                  </button>
-                  <button onClick={() => setView("rewards")} className="bg-white border border-[#E4E8E6] rounded-xl p-4 flex flex-col items-start gap-2 hover:border-[#1F9D6C]/40 transition-colors col-span-2">
-                    <div className="flex items-center gap-2">
-                      <Users size={18} className="text-[#E8A33D]" />
-                      <span className="text-sm font-semibold text-[#16232E]">Reward Members</span>
-                    </div>
-                  </button>
+                  {isOwner && (
+                    <>
+                      <button onClick={() => setView("reports")} className="bg-white border border-[#E4E8E6] rounded-xl p-4 flex flex-col items-start gap-2 hover:border-[#1F9D6C]/40 transition-colors">
+                        <FileBarChart size={18} className="text-[#0A1930]" />
+                        <span className="text-sm font-semibold text-left text-[#16232E]">Daily Report</span>
+                      </button>
+                      <button onClick={() => setView("rewards")} className="bg-white border border-[#E4E8E6] rounded-xl p-4 flex flex-col items-start gap-2 hover:border-[#1F9D6C]/40 transition-colors col-span-2">
+                        <div className="flex items-center gap-2">
+                          <Users size={18} className="text-[#E8A33D]" />
+                          <span className="text-sm font-semibold text-[#16232E]">Reward Members</span>
+                        </div>
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -633,12 +655,21 @@ export default function AutoHuntPOS() {
                 onBack={() => setView("home")}
                 onAdd={() => { setAddPrefill(null); setShowAddModal(true); }}
                 onDelete={deleteTx}
+                isOwner={isOwner}
               />
             )}
 
-            {view === "reports" && <ReportsView txs={txs} date={reportDate} setDate={setReportDate} onBack={() => setView("home")} />}
+            {view === "reports" && (isOwner ? (
+              <ReportsView txs={txs} date={reportDate} setDate={setReportDate} onBack={() => setView("home")} />
+            ) : (
+              <div className="px-4 pt-10 text-center text-sm text-[#8A9A9E]">This screen is only available to the owner account.</div>
+            ))}
 
-            {view === "rewards" && <RewardsView txs={txs} onBack={() => setView("home")} />}
+            {view === "rewards" && (isOwner ? (
+              <RewardsView txs={txs} onBack={() => setView("home")} />
+            ) : (
+              <div className="px-4 pt-10 text-center text-sm text-[#8A9A9E]">This screen is only available to the owner account.</div>
+            ))}
           </>
         )}
       </div>
